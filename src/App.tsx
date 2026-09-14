@@ -1,5 +1,6 @@
 import { ChangeEvent, DragEvent, useEffect, useRef, useState } from 'react'
 import { Eye, ImagePlus, LockKeyhole, ShieldCheck, Sparkles, Upload } from 'lucide-react'
+import RedactionCanvas from './RedactionCanvas'
 
 type ImageDetails = {
   file: File
@@ -102,7 +103,7 @@ function App() {
                 <button className="secondary-button" onClick={() => inputRef.current?.click()}>Replace image</button>
                 <input ref={inputRef} type="file" accept="image/png,image/jpeg,image/webp" onChange={onFileChange} hidden />
               </div>
-              <div className="image-stage"><img src={image.url} alt="Uploaded support screenshot" /></div>
+             <RedactionCanvas key={image.url} src={image.url} />
             </div>
           )}
           {error && <p className="error-message" role="alert">{error}</p>}
