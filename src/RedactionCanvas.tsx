@@ -1,25 +1,86 @@
 import { useEffect, useRef, useState } from 'react'
 import type { PointerEvent } from 'react'
 
-type Props = {
-  src: string
+type Props = { src: string }
+type Point = { x: number; y: number }
+type Box = { x: number; y: number; width: number; height: number }
+type Selection = { start: Point; end: Point; pointerId: number }
+
+function boxBetween(start: Point, end: Point): Box {
+  const x = Math.floor(Math.min(start.x, end.x))
+  const y = Math.floor(Math.min(start.y, end.y))
+
+  return {
+    x,
+    y,
+    width: Math.ceil(Math.max(start.x, end.x)) - x,
+    height: Math.ceil(Math.max(start.y, end.y)) - y,
+  }
 }
 
-type Point = {
-  x: number
-  y: number
+function paint(
+  canvas: HTMLCanvasElement,
+  picture: HTMLImageElement,
+  boxes: Box[],
+  selection?: Selection | null,
+) {
+  const context = canvas.getContext('2d')
+  if (!context) return false
+
+  context.clearRect(0, 0, canvas.width, canvas.height)
+  context.drawImage(picture, 0, 0)
+
+  context.fillStyle = '#000000'
+  for (const box of boxes) {
+    context.fillRect(box.x, box.y, box.width, box.height)
+  }
+
+  if (selection) {
+    const box = boxBetween(selection.start, selection.end)
+    const scale =
+      canvas.width /
+      (canvas.getBoundingClientRect().width || canvas.width)
+
+    context.save()
+    context.fillStyle = 'rgba(37, 99, 235, 0.25)'
+    context.fillRect(box.x, box.y, box.width, box.height)
+    context.strokeStyle = '#2563eb'
+    context.lineWidth = 2 * scale
+    context.setLineDash([6 * scale, 4 * scale])
+    context.strokeRect(box.x, box.y, box.width, box.height)
+    context.restore()
+  }
+
+  return true
 }
 
 export default function RedactionCanvas({ src }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
-  const startRef = useRef<Point | null>(null)
+  const pictureRef = useRef<HTMLImageElement | null>(null)
+  const boxesRef = useRef<Box[]>([])
+  const selectionRef = useRef<Selection | null>(null)
+
   const [ready, setReady] = useState(false)
+  const [count, setCount] = useState(0)
+  const [dragging, setDragging] = useState(false)
   const [message, setMessage] = useState('Loading image…')
 
   useEffect(() => {
     let cancelled = false
+
     setReady(false)
-    startRef.current = null
+    setCount(0)
+    setDragging(false)
+    setMessage('Loading image…')
+
+    pictureRef.current = null
+    boxesRef.current = []
+    selectionRef.current = null
+
+    const canvas = canvasRef.current
+    canvas?.getContext('2d')?.clearRect(
+      0, 0, canvas.width, canvas.height,
+    )
 
     const picture = new Image()
 
@@ -27,19 +88,27 @@ export default function RedactionCanvas({ src }: Props) {
       if (cancelled) return
 
       const canvas = canvasRef.current
-      const context = canvas?.getContext('2d')
-      if (!canvas || !context) return
+      if (!canvas) return
 
       canvas.width = picture.naturalWidth
       canvas.height = picture.naturalHeight
-      context.drawImage(picture, 0, 0)
 
+      if (!paint(canvas, picture, [])) {
+        setMessage('Unable to open the image editor.')
+        return
+      }
+
+      pictureRef.current = picture
       setReady(true)
-      setMessage('Drag over an area. A black box appears when you release.')
+      setMessage(
+        'Drag to select an area. Release to cover it. Press Escape to cancel.',
+      )
     }
 
     picture.onerror = () => {
-      if (!cancelled) setMessage('Unable to load the image for editing.')
+      if (!cancelled) {
+        setMessage('Unable to load the image for editing.')
+      }
     }
 
     picture.src = src
@@ -48,6 +117,17 @@ export default function RedactionCanvas({ src }: Props) {
       cancelled = true
     }
   }, [src])
+
+  function redraw() {
+    if (canvasRef.current && pictureRef.current) {
+      paint(
+        canvasRef.current,
+        pictureRef.current,
+        boxesRef.current,
+        selectionRef.current,
+      )
+    }
+  }
 
   function getPoint(event: PointerEvent<HTMLCanvasElement>): Point {
     const canvas = event.currentTarget
@@ -65,40 +145,111 @@ export default function RedactionCanvas({ src }: Props) {
     }
   }
 
+  function endSelection() {
+    const selection = selectionRef.current
+    selectionRef.current = null
+    setDragging(false)
+
+    const canvas = canvasRef.current
+    if (selection && canvas?.hasPointerCapture(selection.pointerId)) {
+      canvas.releasePointerCapture(selection.pointerId)
+    }
+  }
+
+  function cancelSelection() {
+    if (!selectionRef.current) return
+
+    endSelection()
+    redraw()
+    setMessage('Selection cancelled. Completed redactions are unchanged.')
+  }
+
   function startRedaction(event: PointerEvent<HTMLCanvasElement>) {
-    if (!ready || !event.isPrimary || event.button !== 0) return
+    if (
+      !ready ||
+      !pictureRef.current ||
+      !event.isPrimary ||
+      event.button !== 0 ||
+      selectionRef.current
+    ) return
 
     event.preventDefault()
-    startRef.current = getPoint(event)
+    event.currentTarget.focus({ preventScroll: true })
+
+    const point = getPoint(event)
+    selectionRef.current = {
+      start: point,
+      end: point,
+      pointerId: event.pointerId,
+    }
+
     event.currentTarget.setPointerCapture(event.pointerId)
+    setDragging(true)
+    setMessage(
+      'Release to cover the selected area, or press Escape to cancel.',
+    )
+    redraw()
+  }
+
+  function moveRedaction(event: PointerEvent<HTMLCanvasElement>) {
+    const selection = selectionRef.current
+    if (!selection || selection.pointerId !== event.pointerId) return
+
+    selection.end = getPoint(event)
+    redraw()
   }
 
   function finishRedaction(event: PointerEvent<HTMLCanvasElement>) {
-    if (!event.isPrimary) return
-
-    const start = startRef.current
-    startRef.current = null
-    if (!start) return
+    const selection = selectionRef.current
+    if (!selection || selection.pointerId !== event.pointerId) return
 
     const end = getPoint(event)
-    const context = event.currentTarget.getContext('2d')
-    if (!context) return
+    const valid =
+      Math.abs(end.x - selection.start.x) >= 2 &&
+      Math.abs(end.y - selection.start.y) >= 2
 
-    if (Math.abs(end.x - start.x) < 2 ||
-        Math.abs(end.y - start.y) < 2) return
+    if (valid) {
+      boxesRef.current.push(boxBetween(selection.start, end))
+      setCount(boxesRef.current.length)
+    }
 
-    const left = Math.floor(Math.min(start.x, end.x))
-    const top = Math.floor(Math.min(start.y, end.y))
-    const right = Math.ceil(Math.max(start.x, end.x))
-    const bottom = Math.ceil(Math.max(start.y, end.y))
+    endSelection()
+    redraw()
+    setMessage(
+      valid
+        ? 'Area covered. Add another redaction, undo, or download.'
+        : 'Drag a larger area to create a redaction.',
+    )
+  }
 
-    context.fillStyle = '#000000'
-    context.fillRect(left, top, right - left, bottom - top)
-    setMessage('Area covered. You can cover another area or download.')
+  function undoRedaction() {
+    if (
+      !ready ||
+      selectionRef.current ||
+      boxesRef.current.length === 0
+    ) return
+
+    boxesRef.current.pop()
+    setCount(boxesRef.current.length)
+    redraw()
+    setMessage('Last redaction removed.')
   }
 
   function downloadImage() {
-    canvasRef.current?.toBlob((blob) => {
+    const picture = pictureRef.current
+    if (!ready || !picture || selectionRef.current) return
+
+    // Export completed redactions without the blue selection preview.
+    const output = document.createElement('canvas')
+    output.width = picture.naturalWidth
+    output.height = picture.naturalHeight
+
+    if (!paint(output, picture, boxesRef.current)) {
+      setMessage('Download failed. Please try again.')
+      return
+    }
+
+    output.toBlob((blob) => {
       if (!blob) {
         setMessage('Download failed. Please try again.')
         return
@@ -117,12 +268,30 @@ export default function RedactionCanvas({ src }: Props) {
 
   return (
     <div>
-      <div className="workspace-toolbar">
-        <p role="status">{message}</p>
+      <div
+        className="workspace-toolbar"
+        style={{ flexWrap: 'wrap', gap: 12 }}
+      >
+        <p role="status" style={{ flex: '1 1 240px' }}>
+          {message}
+        </p>
+
+        <span>
+          {count} {count === 1 ? 'redaction' : 'redactions'}
+        </span>
+
+        <button
+          className="secondary-button"
+          onClick={undoRedaction}
+          disabled={!ready || dragging || count === 0}
+        >
+          Undo last redaction
+        </button>
+
         <button
           className="secondary-button"
           onClick={downloadImage}
-          disabled={!ready}
+          disabled={!ready || dragging}
         >
           Download PNG
         </button>
@@ -131,11 +300,28 @@ export default function RedactionCanvas({ src }: Props) {
       <div className="image-stage">
         <canvas
           ref={canvasRef}
+          tabIndex={0}
           onPointerDown={startRedaction}
+          onPointerMove={moveRedaction}
           onPointerUp={finishRedaction}
-          onPointerCancel={() => { startRef.current = null }}
-          onLostPointerCapture={() => { startRef.current = null }}
-          aria-label="Screenshot redaction area"
+          onPointerCancel={(event) => {
+            if (selectionRef.current?.pointerId === event.pointerId) {
+              cancelSelection()
+            }
+          }}
+          onLostPointerCapture={(event) => {
+            if (selectionRef.current?.pointerId === event.pointerId) {
+              cancelSelection()
+            }
+          }}
+          onKeyDown={(event) => {
+            if (event.key === 'Escape') {
+              event.preventDefault()
+              cancelSelection()
+            }
+          }}
+          onBlur={cancelSelection}
+          aria-label="Screenshot redaction area. Drag to select; Escape cancels selection."
           style={{
             display: 'block',
             maxWidth: '100%',
