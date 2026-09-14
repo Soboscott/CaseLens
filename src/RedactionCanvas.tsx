@@ -3,14 +3,39 @@ import type { PointerEvent } from 'react'
 
 type Props = { src: string }
 type Point = { x: number; y: number }
-type Box = { x: number; y: number; width: number; height: number }
-type Selection = { start: Point; end: Point; pointerId: number }
+type Mode = 'redact' | 'callout'
 
-function boxBetween(start: Point, end: Point): Box {
+type Mark =
+  | {
+      kind: 'redact'
+      x: number
+      y: number
+      width: number
+      height: number
+    }
+  | {
+      kind: 'callout'
+      x: number
+      y: number
+      radius: number
+      number: number
+    }
+
+type Selection = {
+  start: Point
+  end: Point
+  pointerId: number
+}
+
+function rectangle(
+  start: Point,
+  end: Point,
+): Extract<Mark, { kind: 'redact' }> {
   const x = Math.floor(Math.min(start.x, end.x))
   const y = Math.floor(Math.min(start.y, end.y))
 
   return {
+    kind: 'redact',
     x,
     y,
     width: Math.ceil(Math.max(start.x, end.x)) - x,
@@ -21,34 +46,62 @@ function boxBetween(start: Point, end: Point): Box {
 function paint(
   canvas: HTMLCanvasElement,
   picture: HTMLImageElement,
-  boxes: Box[],
+  marks: Mark[],
   selection?: Selection | null,
 ) {
-  const context = canvas.getContext('2d')
-  if (!context) return false
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return false
 
-  context.clearRect(0, 0, canvas.width, canvas.height)
-  context.drawImage(picture, 0, 0)
+  ctx.clearRect(0, 0, canvas.width, canvas.height)
+  ctx.drawImage(picture, 0, 0)
 
-  context.fillStyle = '#000000'
-  for (const box of boxes) {
-    context.fillRect(box.x, box.y, box.width, box.height)
+  // Draw callouts first so redactions always cover sensitive areas.
+  for (const mark of marks) {
+    if (mark.kind !== 'callout') continue
+
+    ctx.save()
+    ctx.beginPath()
+    ctx.arc(mark.x, mark.y, mark.radius, 0, Math.PI * 2)
+    ctx.fillStyle = '#123B6D'
+    ctx.fill()
+    ctx.strokeStyle = '#ffffff'
+    ctx.lineWidth = mark.radius / 8
+    ctx.stroke()
+
+    ctx.fillStyle = '#ffffff'
+    ctx.font = `bold ${mark.radius}px Arial, sans-serif`
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
+    ctx.fillText(
+      String(mark.number),
+      mark.x,
+      mark.y,
+      mark.radius * 1.5,
+    )
+    ctx.restore()
+  }
+
+  ctx.fillStyle = '#000000'
+  for (const mark of marks) {
+    if (mark.kind === 'redact') {
+      ctx.fillRect(mark.x, mark.y, mark.width, mark.height)
+    }
   }
 
   if (selection) {
-    const box = boxBetween(selection.start, selection.end)
+    const box = rectangle(selection.start, selection.end)
     const scale =
       canvas.width /
       (canvas.getBoundingClientRect().width || canvas.width)
 
-    context.save()
-    context.fillStyle = 'rgba(37, 99, 235, 0.25)'
-    context.fillRect(box.x, box.y, box.width, box.height)
-    context.strokeStyle = '#2563eb'
-    context.lineWidth = 2 * scale
-    context.setLineDash([6 * scale, 4 * scale])
-    context.strokeRect(box.x, box.y, box.width, box.height)
-    context.restore()
+    ctx.save()
+    ctx.fillStyle = 'rgba(37, 99, 235, 0.25)'
+    ctx.fillRect(box.x, box.y, box.width, box.height)
+    ctx.strokeStyle = '#2563eb'
+    ctx.lineWidth = 2 * scale
+    ctx.setLineDash([6 * scale, 4 * scale])
+    ctx.strokeRect(box.x, box.y, box.width, box.height)
+    ctx.restore()
   }
 
   return true
@@ -57,11 +110,15 @@ function paint(
 export default function RedactionCanvas({ src }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const pictureRef = useRef<HTMLImageElement | null>(null)
-  const boxesRef = useRef<Box[]>([])
+  const marksRef = useRef<Mark[]>([])
   const selectionRef = useRef<Selection | null>(null)
 
   const [ready, setReady] = useState(false)
-  const [count, setCount] = useState(0)
+  const [mode, setMode] = useState<Mode>('redact')
+  const [counts, setCounts] = useState({
+    redactions: 0,
+    callouts: 0,
+  })
   const [dragging, setDragging] = useState(false)
   const [message, setMessage] = useState('Loading image…')
 
@@ -69,12 +126,13 @@ export default function RedactionCanvas({ src }: Props) {
     let cancelled = false
 
     setReady(false)
-    setCount(0)
+    setMode('redact')
+    setCounts({ redactions: 0, callouts: 0 })
     setDragging(false)
     setMessage('Loading image…')
 
     pictureRef.current = null
-    boxesRef.current = []
+    marksRef.current = []
     selectionRef.current = null
 
     const canvas = canvasRef.current
@@ -101,7 +159,7 @@ export default function RedactionCanvas({ src }: Props) {
       pictureRef.current = picture
       setReady(true)
       setMessage(
-        'Drag to select an area. Release to cover it. Press Escape to cancel.',
+        'Drag to redact. Release to apply, or press Escape to cancel.',
       )
     }
 
@@ -123,13 +181,24 @@ export default function RedactionCanvas({ src }: Props) {
       paint(
         canvasRef.current,
         pictureRef.current,
-        boxesRef.current,
+        marksRef.current,
         selectionRef.current,
       )
     }
   }
 
-  function getPoint(event: PointerEvent<HTMLCanvasElement>): Point {
+  function updateCounts() {
+    setCounts({
+      redactions: marksRef.current.filter(
+        mark => mark.kind === 'redact',
+      ).length,
+      callouts: marksRef.current.filter(
+        mark => mark.kind === 'callout',
+      ).length,
+    })
+  }
+
+  function point(event: PointerEvent<HTMLCanvasElement>): Point {
     const canvas = event.currentTarget
     const bounds = canvas.getBoundingClientRect()
 
@@ -161,10 +230,20 @@ export default function RedactionCanvas({ src }: Props) {
 
     endSelection()
     redraw()
-    setMessage('Selection cancelled. Completed redactions are unchanged.')
+    setMessage('Selection cancelled.')
   }
 
-  function startRedaction(event: PointerEvent<HTMLCanvasElement>) {
+  function changeMode(next: Mode) {
+    cancelSelection()
+    setMode(next)
+    setMessage(
+      next === 'redact'
+        ? 'Drag to redact. Release to apply, or press Escape to cancel.'
+        : 'Click to add the next numbered callout. Place it beside the area you want to explain.',
+    )
+  }
+
+  function start(event: PointerEvent<HTMLCanvasElement>) {
     if (
       !ready ||
       !pictureRef.current ||
@@ -176,80 +255,114 @@ export default function RedactionCanvas({ src }: Props) {
     event.preventDefault()
     event.currentTarget.focus({ preventScroll: true })
 
-    const point = getPoint(event)
+    const position = point(event)
+
+    if (mode === 'callout') {
+      const canvas = event.currentTarget
+      const scale =
+        canvas.width / canvas.getBoundingClientRect().width
+
+      const radius = Math.min(
+        16 * scale,
+        canvas.width / 4,
+        canvas.height / 4,
+      )
+      const inset = radius * 1.1
+      const number = marksRef.current.filter(
+        mark => mark.kind === 'callout',
+      ).length + 1
+
+      marksRef.current.push({
+        kind: 'callout',
+        x: Math.max(
+          inset,
+          Math.min(canvas.width - inset, position.x),
+        ),
+        y: Math.max(
+          inset,
+          Math.min(canvas.height - inset, position.y),
+        ),
+        radius,
+        number,
+      })
+
+      updateCounts()
+      redraw()
+      setMessage(
+        `Callout ${number} added. Click to add another, or choose Redact.`,
+      )
+      return
+    }
+
     selectionRef.current = {
-      start: point,
-      end: point,
+      start: position,
+      end: position,
       pointerId: event.pointerId,
     }
 
     event.currentTarget.setPointerCapture(event.pointerId)
     setDragging(true)
-    setMessage(
-      'Release to cover the selected area, or press Escape to cancel.',
-    )
     redraw()
   }
 
-  function moveRedaction(event: PointerEvent<HTMLCanvasElement>) {
+  function move(event: PointerEvent<HTMLCanvasElement>) {
     const selection = selectionRef.current
     if (!selection || selection.pointerId !== event.pointerId) return
 
-    selection.end = getPoint(event)
+    selection.end = point(event)
     redraw()
   }
 
-  function finishRedaction(event: PointerEvent<HTMLCanvasElement>) {
+  function finish(event: PointerEvent<HTMLCanvasElement>) {
     const selection = selectionRef.current
     if (!selection || selection.pointerId !== event.pointerId) return
 
-    const end = getPoint(event)
+    const end = point(event)
     const valid =
       Math.abs(end.x - selection.start.x) >= 2 &&
       Math.abs(end.y - selection.start.y) >= 2
 
     if (valid) {
-      boxesRef.current.push(boxBetween(selection.start, end))
-      setCount(boxesRef.current.length)
+      marksRef.current.push(rectangle(selection.start, end))
+      updateCounts()
     }
 
     endSelection()
     redraw()
     setMessage(
-      valid
-        ? 'Area covered. Add another redaction, undo, or download.'
-        : 'Drag a larger area to create a redaction.',
+      valid ? 'Redaction added.' : 'Drag a larger area to redact.',
     )
   }
 
-  function undoRedaction() {
-    if (
-      !ready ||
-      selectionRef.current ||
-      boxesRef.current.length === 0
-    ) return
+  function undo() {
+    if (!ready || selectionRef.current) return
 
-    boxesRef.current.pop()
-    setCount(boxesRef.current.length)
+    const removed = marksRef.current.pop()
+    if (!removed) return
+
+    updateCounts()
     redraw()
-    setMessage('Last redaction removed.')
+    setMessage(
+      removed.kind === 'callout'
+        ? 'Last callout removed.'
+        : 'Last redaction removed.',
+    )
   }
 
-  function downloadImage() {
+  function download() {
     const picture = pictureRef.current
     if (!ready || !picture || selectionRef.current) return
 
-    // Export completed redactions without the blue selection preview.
     const output = document.createElement('canvas')
     output.width = picture.naturalWidth
     output.height = picture.naturalHeight
 
-    if (!paint(output, picture, boxesRef.current)) {
+    if (!paint(output, picture, marksRef.current)) {
       setMessage('Download failed. Please try again.')
       return
     }
 
-    output.toBlob((blob) => {
+    output.toBlob(blob => {
       if (!blob) {
         setMessage('Download failed. Please try again.')
         return
@@ -258,7 +371,7 @@ export default function RedactionCanvas({ src }: Props) {
       const url = URL.createObjectURL(blob)
       const link = document.createElement('a')
       link.href = url
-      link.download = 'caselens-redacted.png'
+      link.download = 'caselens-annotated.png'
       document.body.appendChild(link)
       link.click()
       link.remove()
@@ -272,56 +385,103 @@ export default function RedactionCanvas({ src }: Props) {
         className="workspace-toolbar"
         style={{ flexWrap: 'wrap', gap: 12 }}
       >
-        <p role="status" style={{ flex: '1 1 240px' }}>
-          {message}
-        </p>
+        <div
+          role="group"
+          aria-label="Editing tools"
+          style={{ display: 'flex', gap: 8 }}
+        >
+          <button
+            className={
+              mode === 'redact'
+                ? 'primary-button'
+                : 'secondary-button'
+            }
+            aria-pressed={mode === 'redact'}
+            disabled={!ready}
+            onClick={() => changeMode('redact')}
+          >
+            Redact
+          </button>
+
+          <button
+            className={
+              mode === 'callout'
+                ? 'primary-button'
+                : 'secondary-button'
+            }
+            aria-pressed={mode === 'callout'}
+            disabled={!ready}
+            onClick={() => changeMode('callout')}
+          >
+            Add callout
+          </button>
+        </div>
 
         <span>
-          {count} {count === 1 ? 'redaction' : 'redactions'}
+          {counts.redactions}{' '}
+          {counts.redactions === 1 ? 'redaction' : 'redactions'}
+          {' · '}
+          {counts.callouts}{' '}
+          {counts.callouts === 1 ? 'callout' : 'callouts'}
         </span>
 
         <button
           className="secondary-button"
-          onClick={undoRedaction}
-          disabled={!ready || dragging || count === 0}
+          onClick={undo}
+          disabled={
+            !ready ||
+            dragging ||
+            counts.redactions + counts.callouts === 0
+          }
         >
-          Undo last redaction
+          Undo last action
         </button>
 
         <button
           className="secondary-button"
-          onClick={downloadImage}
+          onClick={download}
           disabled={!ready || dragging}
         >
           Download PNG
         </button>
+
+        <p
+          role="status"
+          style={{ flexBasis: '100%', margin: 0 }}
+        >
+          {message}
+        </p>
       </div>
 
       <div className="image-stage">
         <canvas
           ref={canvasRef}
           tabIndex={0}
-          onPointerDown={startRedaction}
-          onPointerMove={moveRedaction}
-          onPointerUp={finishRedaction}
-          onPointerCancel={(event) => {
+          onPointerDown={start}
+          onPointerMove={move}
+          onPointerUp={finish}
+          onPointerCancel={event => {
             if (selectionRef.current?.pointerId === event.pointerId) {
               cancelSelection()
             }
           }}
-          onLostPointerCapture={(event) => {
+          onLostPointerCapture={event => {
             if (selectionRef.current?.pointerId === event.pointerId) {
               cancelSelection()
             }
           }}
-          onKeyDown={(event) => {
+          onKeyDown={event => {
             if (event.key === 'Escape') {
               event.preventDefault()
               cancelSelection()
             }
           }}
           onBlur={cancelSelection}
-          aria-label="Screenshot redaction area. Drag to select; Escape cancels selection."
+          aria-label={
+            mode === 'redact'
+              ? 'Screenshot editor. Drag to redact; Escape cancels selection.'
+              : 'Screenshot editor. Click to add a numbered callout.'
+          }
           style={{
             display: 'block',
             maxWidth: '100%',
