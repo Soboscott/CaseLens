@@ -1,6 +1,7 @@
 import { ChangeEvent, DragEvent, useEffect, useRef, useState } from 'react'
 import { Eye, ImagePlus, LockKeyhole, ShieldCheck, Sparkles, Upload } from 'lucide-react'
 import RedactionCanvas from './RedactionCanvas'
+import SupportCaseSummary from './SupportCaseSummary'
 
 type ImageDetails = {
   file: File
@@ -108,6 +109,8 @@ function App() {
           )}
           {error && <p className="error-message" role="alert">{error}</p>}
         </section>
+
+        <SupportCaseSummary />
 
         <section className="trust-note">
           <ShieldCheck size={21} />
