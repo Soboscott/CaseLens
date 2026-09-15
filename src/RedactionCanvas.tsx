@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from 'react'
-import type { PointerEvent } from 'react'
+import { useEffect, useImperativeHandle, useRef, useState } from 'react'
+import type { PointerEvent, Ref } from 'react'
 
-type Props = { src: string }
+export type ScreenshotExporter = { exportPNG: () => Promise<Blob> }
+type Props = { src: string; ref?: Ref<ScreenshotExporter> }
 type Point = { x: number; y: number }
 type Mode = 'redact' | 'callout'
 
@@ -107,7 +108,7 @@ function paint(
   return true
 }
 
-export default function RedactionCanvas({ src }: Props) {
+export default function RedactionCanvas({ src, ref }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const pictureRef = useRef<HTMLImageElement | null>(null)
   const marksRef = useRef<Mark[]>([])
@@ -349,34 +350,46 @@ export default function RedactionCanvas({ src }: Props) {
     )
   }
 
-  function download() {
+  // Both download paths flatten the current marks into a fresh PNG.
+  // Never export the original upload or the translucent selection preview.
+  async function exportPNG(): Promise<Blob> {
     const picture = pictureRef.current
-    if (!ready || !picture || selectionRef.current) return
+    if (!ready || !picture) throw new Error('Wait for the screenshot to finish loading.')
+    if (selectionRef.current) throw new Error('Finish your redaction before downloading.')
 
     const output = document.createElement('canvas')
     output.width = picture.naturalWidth
     output.height = picture.naturalHeight
-
     if (!paint(output, picture, marksRef.current)) {
-      setMessage('Download failed. Please try again.')
-      return
+      throw new Error('Unable to export the screenshot. Please try again.')
     }
+    return new Promise((resolve, reject) => {
+      output.toBlob(blob => {
+        if (blob) resolve(blob)
+        else reject(new Error('Unable to export the screenshot. Please try again.'))
+      }, 'image/png')
+    })
+  }
 
-    output.toBlob(blob => {
-      if (!blob) {
-        setMessage('Download failed. Please try again.')
-        return
-      }
+  useImperativeHandle(ref, () => ({ exportPNG }))
 
+  async function download() {
+    try {
+      const blob = await exportPNG()
       const url = URL.createObjectURL(blob)
       const link = document.createElement('a')
-      link.href = url
-      link.download = 'caselens-annotated.png'
-      document.body.appendChild(link)
-      link.click()
-      link.remove()
-      window.setTimeout(() => URL.revokeObjectURL(url), 60000)
-    }, 'image/png')
+      try {
+        link.href = url
+        link.download = 'caselens-annotated.png'
+        document.body.appendChild(link)
+        link.click()
+      } finally {
+        link.remove()
+        window.setTimeout(() => URL.revokeObjectURL(url), 60000)
+      }
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Download failed. Please try again.')
+    }
   }
 
   return (

@@ -1,5 +1,6 @@
 import { useRef, useState } from 'react'
-import { ClipboardCopy, Download, FileText } from 'lucide-react'
+import { ClipboardCopy, Download, FileText, Package } from 'lucide-react'
+import { createCasePackage } from './casePackage'
 import './SupportCaseSummary.css'
 
 const fields = [
@@ -11,10 +12,17 @@ const fields = [
 
 type FieldKey = typeof fields[number]['key']
 
-export default function SupportCaseSummary() {
+type Props = {
+  hasImage: boolean
+  exportScreenshot: () => Promise<Blob>
+}
+
+export default function SupportCaseSummary({ hasImage, exportScreenshot }: Props) {
   const [values, setValues] = useState<Record<FieldKey, string>>({ issue: '', expected: '', actual: '', steps: '' })
   const [message, setMessage] = useState('')
   const [copying, setCopying] = useState(false)
+  const [packaging, setPackaging] = useState(false)
+  const packagingRef = useRef(false)
   const [manualCopy, setManualCopy] = useState(false)
   const previewRef = useRef<HTMLTextAreaElement>(null)
   const revisionRef = useRef(0)
@@ -49,6 +57,38 @@ export default function SupportCaseSummary() {
         const downloadUrl = url
         window.setTimeout(() => URL.revokeObjectURL(downloadUrl), 1000)
       }
+    }
+  }
+
+  async function downloadPackage() {
+    if (!hasImage || !hasContent || packagingRef.current) return
+    packagingRef.current = true
+    setPackaging(true)
+    setManualCopy(false)
+    setMessage('Preparing your case package…')
+    const revision = revisionRef.current
+    let url: string | undefined
+    const link = document.createElement('a')
+    try {
+      // Capture the screenshot and summary as they were when Download was clicked.
+      const screenshot = await exportScreenshot()
+      const archive = await createCasePackage(screenshot, summary)
+      url = URL.createObjectURL(archive)
+      link.href = url
+      link.download = 'caselens-case-package.zip'
+      document.body.appendChild(link)
+      link.click()
+      if (revision === revisionRef.current) setMessage('Download requested: caselens-case-package.zip. It contains your edited screenshot and summary from when you clicked Download.')
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'The case package could not be created. Please try again.')
+    } finally {
+      link.remove()
+      if (url) {
+        const downloadUrl = url
+        window.setTimeout(() => URL.revokeObjectURL(downloadUrl), 60000)
+      }
+      packagingRef.current = false
+      setPackaging(false)
     }
   }
 
@@ -90,13 +130,16 @@ export default function SupportCaseSummary() {
         ))}
       </div>
       <div className="case-summary-actions">
-        <button type="button" className="primary-button" disabled={!hasContent || copying} onClick={copySummary}>
+        <button type="button" className="primary-button" disabled={!hasContent || copying || packaging} onClick={copySummary}>
           <ClipboardCopy size={17} aria-hidden="true" /> {copying ? 'Copying…' : 'Copy summary'}
         </button>
-        <button type="button" className="secondary-button" disabled={!hasContent || copying} onClick={downloadSummary}>
+        <button type="button" className="secondary-button" disabled={!hasContent || copying || packaging} onClick={downloadSummary}>
           <Download size={17} aria-hidden="true" /> Download summary (.txt)
         </button>
-        <span>Copy or download your summary, then attach your exported screenshot separately.</span>
+        <button type="button" className="secondary-button" disabled={!hasImage || !hasContent || copying || packaging} onClick={downloadPackage} aria-describedby="case-package-help">
+          <Package size={17} aria-hidden="true" /> {packaging ? 'Preparing ZIP…' : 'Download case package (.zip)'}
+        </button>
+        <span id="case-package-help">Add a screenshot and at least one summary field to download both together as a ZIP. Packaging happens in your browser.</span>
       </div>
       <p className="case-summary-status" role="status">{message}</p>
       {manualCopy && (

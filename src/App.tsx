@@ -1,6 +1,7 @@
 import { ChangeEvent, DragEvent, useEffect, useRef, useState } from 'react'
 import { Eye, ImagePlus, LockKeyhole, ShieldCheck, Sparkles, Upload } from 'lucide-react'
 import RedactionCanvas from './RedactionCanvas'
+import type { ScreenshotExporter } from './RedactionCanvas'
 import SupportCaseSummary from './SupportCaseSummary'
 
 type ImageDetails = {
@@ -14,6 +15,7 @@ const ACCEPTED_TYPES = ['image/png', 'image/jpeg', 'image/webp']
 const MAX_FILE_SIZE = 10 * 1024 * 1024
 
 function App() {
+  const screenshotRef = useRef<ScreenshotExporter>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const [image, setImage] = useState<ImageDetails | null>(null)
   const [error, setError] = useState('')
@@ -104,13 +106,19 @@ function App() {
                 <button className="secondary-button" onClick={() => inputRef.current?.click()}>Replace image</button>
                 <input ref={inputRef} type="file" accept="image/png,image/jpeg,image/webp" onChange={onFileChange} hidden />
               </div>
-             <RedactionCanvas key={image.url} src={image.url} />
+             <RedactionCanvas key={image.url} src={image.url} ref={screenshotRef} />
             </div>
           )}
           {error && <p className="error-message" role="alert">{error}</p>}
         </section>
 
-        <SupportCaseSummary />
+        <SupportCaseSummary
+          hasImage={Boolean(image)}
+          exportScreenshot={() => {
+            if (!screenshotRef.current) return Promise.reject(new Error('Add a screenshot before downloading a case package.'))
+            return screenshotRef.current.exportPNG()
+          }}
+        />
 
         <section className="trust-note">
           <ShieldCheck size={21} />
