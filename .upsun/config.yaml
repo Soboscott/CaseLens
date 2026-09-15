@@ -1,24 +1,27 @@
-# Upsun configuration, generated using AI at: 2026-09-15T18:18:10.422Z
-# AI can make mistakes. Please modify this file to suit your needs.
 applications:
   caselens:
-    type: nodejs:26
+    source:
+      root: "/"
+    type: "nodejs:24"
     build:
       flavor: none
     hooks:
       build: |
-        set -ex
-        npm ci --omit=dev
+        set -eu
+        npm ci --include=dev
         npm run build
     web:
       commands:
         start: sleep infinity
       locations:
-        /:
-          root: dist
-          index: [index.html]
+        "/":
+          root: "dist"
+          index:
+            - index.html
           scripts: false
-          expires: 24h
-          rules:
-            '\.(css|js|gif|jpe?g|png|svg|webp)$':
-              expires: 4w
+          allow: true
+
+routes:
+  "https://{default}/":
+    type: upstream
+    upstream: "caselens:http"
