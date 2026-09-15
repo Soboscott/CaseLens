@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react'
-import { ClipboardCopy, FileText } from 'lucide-react'
+import { ClipboardCopy, Download, FileText } from 'lucide-react'
 import './SupportCaseSummary.css'
 
 const fields = [
@@ -26,6 +26,30 @@ export default function SupportCaseSummary() {
     setValues(current => ({ ...current, [key]: value }))
     setMessage('')
     setManualCopy(false)
+  }
+
+  function downloadSummary() {
+    if (!hasContent) return
+    setMessage('')
+    let url: string | undefined
+    const link = document.createElement('a')
+    try {
+      const file = new Blob([summary], { type: 'text/plain;charset=utf-8' })
+      url = URL.createObjectURL(file)
+      link.href = url
+      link.download = 'caselens-support-summary.txt'
+      document.body.appendChild(link)
+      link.click()
+      setMessage('Download requested: caselens-support-summary.txt. Your screenshot is exported separately.')
+    } catch {
+      setMessage('The download could not start. Try Copy summary to save the text manually.')
+    } finally {
+      link.remove()
+      if (url) {
+        const downloadUrl = url
+        window.setTimeout(() => URL.revokeObjectURL(downloadUrl), 1000)
+      }
+    }
   }
 
   async function copySummary() {
@@ -69,7 +93,10 @@ export default function SupportCaseSummary() {
         <button type="button" className="primary-button" disabled={!hasContent || copying} onClick={copySummary}>
           <ClipboardCopy size={17} aria-hidden="true" /> {copying ? 'Copying…' : 'Copy summary'}
         </button>
-        <span>Paste the summary into your ticket and attach your exported screenshot.</span>
+        <button type="button" className="secondary-button" disabled={!hasContent || copying} onClick={downloadSummary}>
+          <Download size={17} aria-hidden="true" /> Download summary (.txt)
+        </button>
+        <span>Copy or download your summary, then attach your exported screenshot separately.</span>
       </div>
       <p className="case-summary-status" role="status">{message}</p>
       {manualCopy && (
